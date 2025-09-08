@@ -6,48 +6,45 @@ import uuid
 from app import app, db, MissingPerson, User, mail
 from flask_mail import Message
 
-
 def start_camera():
     cap = cv2.VideoCapture(1)  # Use 0 for default camera
 
-    # Keep track of emails already sent
+    # Keep track of emails already sent to avoid spamming
     notified_ids = set()
 
-    # ✅ PRELOAD encodings to avoid lag
-    known_encodings = {}
-    with app.app_context():
-        persons = MissingPerson.query.all()
-        for person in persons:
-            if os.path.exists(person.image):
-                try:
-                    img = face_recognition.load_image_file(person.image)
-                    encoding = face_recognition.face_encodings(img)[0]
-                    known_encodings[person.id] = (encoding, person)
-                except Exception as e:
-                    print(f"Error encoding {person.name}: {e}")
-
     while True:
+        time.sleep(0.001)
         ret, frame = cap.read()
         if not ret:
             print("Failed to grab frame")
             break
-
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         face_locations = face_recognition.face_locations(rgb_frame)
         face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
 
-        for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
-            name_label = "Unknown"
+        with app.app_context():
+            persons = MissingPerson.query.all()
 
-            for pid, (known_encoding, person) in known_encodings.items():
-                matches = face_recognition.compare_faces([known_encoding], face_encoding)
+            for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
+                name_label = "Unknown"
 
-                if True in matches:
-                    name_label = person.name
+                for person in persons:
+                    if not os.path.exists(person.image):
+                        continue
 
-                    # If person not already marked found, mark and send mail
-                    if person.status != "found":
-                        with app.app_context():
+                    try:
+                        known_image = face_recognition.load_image_file(person.image)
+                        known_encoding = face_recognition.face_encodings(known_image)[0]
+                    except Exception as e:
+                        print(f"Error loading image for {person.name}: {e}")
+                        continue
+
+                    matches = face_recognition.compare_faces([known_encoding], face_encoding)
+                    if True in matches:
+                        name_label = person.name
+
+                        # If person not already marked found, mark and send mail
+                        if person.status != "found":
                             person.status = "found"
                             db.session.commit()
 
@@ -73,12 +70,12 @@ def start_camera():
                                     print(f"❌ Error sending email with snapshot: {e}")
 
                                 notified_ids.add(person.id)
-                    break
+                        break
 
-            # Draw rectangle and label
-            cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
-            cv2.putText(frame, name_label, (left, top - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+                # Draw rectangle and label
+                cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
+                cv2.putText(frame, name_label, (left, top - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
 
         cv2.imshow("Missing Person Finder Camera", frame)
 
